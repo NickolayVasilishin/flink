@@ -33,6 +33,7 @@ import org.apache.flink.api.table.BatchTableEnvironment
 import org.apache.calcite.rex._
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 /**
   * Flink RelNode which matches along with LogicalCalc.
@@ -129,8 +130,65 @@ class DataSetCalc(
       body,
       returnType)
 
+    import scala.collection.JavaConversions._
+
+    val inputTypes = this.calcProgram.getInputRowType
+    val inputCount = this.calcProgram.getExprCount
+    val inputFields: mutable.Buffer[RexInputRef] = this.calcProgram.getExprList.filter(_.isInstanceOf[RexInputRef]).map(_.asInstanceOf[RexInputRef])
+    val rexCalls = this.calcProgram.getExprList.filter(_.isInstanceOf[RexCall]).map(_.asInstanceOf[RexCall])
+
+    calcProgram.getProjectList
+
+    calcProgram.getExprList.get(0).asInstanceOf[RexInputRef]
+
+    println(
+      s"""
+         |Total input fields: $inputCount
+         |Input types: $inputTypes
+         |Input fields: ${inputFields.mkString(", ")}
+         |Input Map: ${inputFields.map(e => (e.getName, e.getIndex))}
+         |Rex calls: ${rexCalls.mkString(", ")}
+         |Rex operands: ${rexCalls.map(_.operands).mkString(", ")}
+         |Output types: ${calcProgram.getOutputRowType}
+         |Project list: ${calcProgram.getProjectList}
+         |Project Map: ${calcProgram.getProjectList.map(e => (e.getName, e.getIndex))}
+       """.stripMargin)
+    println(s"efficient: ${tableEnv.config.getEfficientTypeUsage}")
     val mapFunc = calcMapFunction(genFunction)
-    inputDS.flatMap(mapFunc).name(calcOpName(calcProgram, getExpressionString))
+    println(chooseForwardedFields(tableEnv.config.getEfficientTypeUsage))
+    inputDS.flatMap(mapFunc).withForwardedFields(chooseForwardedFields(tableEnv.config.getEfficientTypeUsage)).name(calcOpName(calcProgram, getExpressionString))
   }
 
+  def chooseForwardedFields(eff: Boolean): String = {
+    import scala.collection.JavaConversions._
+    val modified = calcProgram.
+      getExprList
+      .filter(_.isInstanceOf[RexCall])
+      .flatMap(_.asInstanceOf[RexCall].operands)
+      .map(_.asInstanceOf[RexLocalRef].getIndex)
+      .toSet
+
+    val template = if (eff) (v: Int) => s"_${v + 1}" else (v: Int) => s"f$v"
+
+    println(template(1))
+
+    calcProgram.getProjectList
+      .map(e => (e.getName, e.getIndex))
+      .zipWithIndex
+      .map { case ((name, idx), pidx) => (name, idx, pidx) }
+      .filterNot(a => modified.contains(a._2))
+      .map {a =>
+        if (a._2 == a._3) {
+          template(a._2)
+        } else {
+          s"${template(a._2)}->${template(a._3)}"
+        }
+
+//        .map {a => if (a._2 == a._3) {
+//          s"_${a._2+1}"
+//        } else {
+//          s"_${a._2+1}->_${a._3+1}"
+//        }
+      }.mkString(";")
+  }
 }
