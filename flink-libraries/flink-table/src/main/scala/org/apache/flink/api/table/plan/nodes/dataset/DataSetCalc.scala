@@ -132,6 +132,75 @@ class DataSetCalc(
 
     import scala.collection.JavaConversions._
 
+    def chooseForwardedFields(): String = {
+      import scala.collection.JavaConversions._
+      val modified = calcProgram.
+        getExprList
+        .filter(_.isInstanceOf[RexCall])
+        .flatMap(_.asInstanceOf[RexCall].operands)
+        .map(_.asInstanceOf[RexLocalRef].getIndex)
+        .toSet
+
+
+      //TODO check if it is needed
+      def wrapIndex(v: Int) = {
+        if(inputDS.getType.getTypeClass.getSimpleName == "Row") {
+          if(expectedType.isEmpty || inputDS.getType.getTypeClass == expectedType.get.getTypeClass) {
+            s"f$v"
+          } else {
+            s"f$v->_${v + 1}"
+          }
+        } else {
+          if(expectedType.isEmpty || inputDS.getType.getTypeClass == expectedType.get.getTypeClass) {
+            s"_$v"
+          } else {
+            s"_${v + 1}->f$v"
+          }
+        }
+      }
+
+      def wrapIndices(v1: Int, v2: Int) = {
+        if (inputDS.getType.getTypeClass.getSimpleName == "Row") {
+          if (expectedType.get.getTypeClass.getSimpleName == "Row") {
+            s"f$v1->f$v2"
+          } else {
+            s"f$v1->_${v2 + 1}"
+          }
+        } else {
+          if (expectedType.get.getTypeClass.getSimpleName == "Row") {
+            s"_${v1 + 1}->f$v2"
+          } else {
+            s"_${v1 + 1}->_${v2 + 1}"
+          }
+        }
+      }
+
+
+      val template = (v: Int) => if(inputDS.getType.getTypeClass.getSimpleName == "Row") {
+        s"f$v"
+      } else {
+        s"_${v + 1}"
+      }
+
+
+      calcProgram.getProjectList
+        .map(e => (e.getName, e.getIndex))
+        .zipWithIndex
+        .map { case ((name, idx), pidx) => (name, idx, pidx) }
+        .filterNot(a => modified.contains(a._2))
+        .map {a =>
+          if (a._2 == a._3) {
+            println(wrapIndex(a._2))
+            wrapIndex(a._2)
+          } else {
+            println(wrapIndices(a._2, a._3))
+            wrapIndices(a._2, a._3)
+          }
+        }.mkString(";")
+      ""
+    }
+
+
     val inputTypes = this.calcProgram.getInputRowType
     val inputCount = this.calcProgram.getExprCount
     val inputFields: mutable.Buffer[RexInputRef] = this.calcProgram.getExprList.filter(_.isInstanceOf[RexInputRef]).map(_.asInstanceOf[RexInputRef])
@@ -155,40 +224,14 @@ class DataSetCalc(
        """.stripMargin)
     println(s"efficient: ${tableEnv.config.getEfficientTypeUsage}")
     val mapFunc = calcMapFunction(genFunction)
-    println(chooseForwardedFields(tableEnv.config.getEfficientTypeUsage))
-    inputDS.flatMap(mapFunc).withForwardedFields(chooseForwardedFields(tableEnv.config.getEfficientTypeUsage)).name(calcOpName(calcProgram, getExpressionString))
+    val fields: String = chooseForwardedFields()
+    println(fields)
+    if(fields != "") {
+      inputDS.flatMap(mapFunc).withForwardedFields(fields).name(calcOpName(calcProgram, getExpressionString))
+    } else {
+      inputDS.flatMap(mapFunc).name(calcOpName(calcProgram, getExpressionString))
+    }
   }
 
-  def chooseForwardedFields(eff: Boolean): String = {
-    import scala.collection.JavaConversions._
-    val modified = calcProgram.
-      getExprList
-      .filter(_.isInstanceOf[RexCall])
-      .flatMap(_.asInstanceOf[RexCall].operands)
-      .map(_.asInstanceOf[RexLocalRef].getIndex)
-      .toSet
 
-    val template = if (eff) (v: Int) => s"_${v + 1}" else (v: Int) => s"f$v"
-
-    println(template(1))
-
-    calcProgram.getProjectList
-      .map(e => (e.getName, e.getIndex))
-      .zipWithIndex
-      .map { case ((name, idx), pidx) => (name, idx, pidx) }
-      .filterNot(a => modified.contains(a._2))
-      .map {a =>
-        if (a._2 == a._3) {
-          template(a._2)
-        } else {
-          s"${template(a._2)}->${template(a._3)}"
-        }
-
-//        .map {a => if (a._2 == a._3) {
-//          s"_${a._2+1}"
-//        } else {
-//          s"_${a._2+1}->_${a._3+1}"
-//        }
-      }.mkString(";")
-  }
 }
