@@ -141,20 +141,25 @@ class DataSetCalc(
         .map(_.asInstanceOf[RexLocalRef].getIndex)
         .toSet
 
+      val f = (v: Int) => s"f$v"
+      val `_` = (v: Int) => s"_${v + 1}"
+      implicit def string2ForwardFields(left: String) = new AnyRef {
+        def ->(right: String):String = left + "->" + right
+      }
 
       //TODO check if it is needed
       def wrapIndex(v: Int) = {
         if(inputDS.getType.getTypeClass.getSimpleName == "Row") {
           if(expectedType.isEmpty || inputDS.getType.getTypeClass == expectedType.get.getTypeClass) {
-            s"f$v"
+            f(v)
           } else {
-            s"f$v->_${v + 1}"
+            f(v) -> `_`(v)
           }
         } else {
           if(expectedType.isEmpty || inputDS.getType.getTypeClass == expectedType.get.getTypeClass) {
-            s"_$v"
+            `_`(v)
           } else {
-            s"_${v + 1}->f$v"
+            `_`(v) -> f(v)
           }
         }
       }
@@ -162,26 +167,18 @@ class DataSetCalc(
       def wrapIndices(v1: Int, v2: Int) = {
         if (inputDS.getType.getTypeClass.getSimpleName == "Row") {
           if (expectedType.get.getTypeClass.getSimpleName == "Row") {
-            s"f$v1->f$v2"
+            f(v1) -> f(v2)
           } else {
-            s"f$v1->_${v2 + 1}"
+            f(v1) -> `_`(v2)
           }
         } else {
           if (expectedType.get.getTypeClass.getSimpleName == "Row") {
-            s"_${v1 + 1}->f$v2"
+            `_`(v1) -> f(v2)
           } else {
-            s"_${v1 + 1}->_${v2 + 1}"
+            `_`(v1) -> `_`(v2)
           }
         }
       }
-
-
-      val template = (v: Int) => if(inputDS.getType.getTypeClass.getSimpleName == "Row") {
-        s"f$v"
-      } else {
-        s"_${v + 1}"
-      }
-
 
       calcProgram.getProjectList
         .map(e => (e.getName, e.getIndex))
@@ -206,10 +203,6 @@ class DataSetCalc(
     val inputFields: mutable.Buffer[RexInputRef] = this.calcProgram.getExprList.filter(_.isInstanceOf[RexInputRef]).map(_.asInstanceOf[RexInputRef])
     val rexCalls = this.calcProgram.getExprList.filter(_.isInstanceOf[RexCall]).map(_.asInstanceOf[RexCall])
 
-    calcProgram.getProjectList
-
-    calcProgram.getExprList.get(0).asInstanceOf[RexInputRef]
-
     println(
       s"""
          |Total input fields: $inputCount
@@ -226,6 +219,7 @@ class DataSetCalc(
     val mapFunc = calcMapFunction(genFunction)
     val fields: String = chooseForwardedFields()
     println(fields)
+
     if(fields != "") {
       inputDS.flatMap(mapFunc).withForwardedFields(fields).name(calcOpName(calcProgram, getExpressionString))
     } else {
