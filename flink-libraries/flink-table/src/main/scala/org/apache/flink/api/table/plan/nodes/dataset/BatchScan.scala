@@ -23,13 +23,15 @@ import org.apache.calcite.rel.core.TableScan
 import org.apache.calcite.rel.metadata.RelMetadataQuery
 import org.apache.calcite.rex.{RexCall, RexInputRef, RexLocalRef}
 import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
+import org.apache.flink.api.common.typeutils.CompositeType
 import org.apache.flink.api.java.DataSet
-import org.apache.flink.api.java.typeutils.PojoTypeInfo
+import org.apache.flink.api.java.typeutils.{PojoTypeInfo, TupleTypeInfo}
 import org.apache.flink.api.scala.typeutils.CaseClassTypeInfo
 import org.apache.flink.api.table.{Row, TableConfig}
 import org.apache.flink.api.table.plan.schema.FlinkTable
 import org.apache.flink.api.table.typeutils.RowTypeInfo
 import org.apache.flink.api.table.typeutils.TypeConverter.determineReturnType
+import org.omg.CORBA.BAD_PARAM
 
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
@@ -59,78 +61,6 @@ abstract class BatchScan(
       config: TableConfig): DataSet[Any] = {
 
     val inputType = input.getType
-
-
-
-//    import scala.collection.JavaConversions._
-//    def chooseForwardedFields(): String = {
-//
-//      val f = (v: Int) => s"f$v"
-//      val `_` = (v: Int) => s"_${v + 1}"
-//      implicit def string2ForwardFields(left: String) = new AnyRef {
-//        def ->(right: String):String = left + "->" + right
-//      }
-//
-//      //choose format of string depending on input/output types
-//      def wrapIndex(index: Int): String = {
-//        if(inputDS.getType.getTypeClass == classOf[Row]) {
-//          if(inputDS.getType.getTypeClass == returnType.getTypeClass) {
-//            f(index)
-//          } else {
-//            f(index) -> `_`(index)
-//          }
-//        } else {
-//          if(inputDS.getType.getTypeClass == returnType.getTypeClass) {
-//            `_`(index)
-//          } else {
-//            `_`(index) -> f(index)
-//          }
-//        }
-//      }
-//
-//      //choose format of string depending on input/output types
-//      def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-//        if (inputDS.getType.getTypeClass == classOf[Row]) {
-//          if (returnType.getTypeClass == classOf[Row]) {
-//            f(inputIndex) -> f(outputIndex)
-//          } else {
-//            f(inputIndex) -> `_`(outputIndex)
-//          }
-//        } else {
-//          if (returnType.getTypeClass == classOf[Row]) {
-//            `_`(inputIndex) -> f(outputIndex)
-//          } else {
-//            `_`(inputIndex) -> `_`(outputIndex)
-//          }
-//        }
-//      }
-//
-//      //get indices of all modified operands
-//      val modified = calcProgram.
-//        getExprList
-//        .filter(_.isInstanceOf[RexCall])
-//        .flatMap(_.asInstanceOf[RexCall].operands)
-//        .map(_.asInstanceOf[RexLocalRef].getIndex)
-//        .toSet
-//
-//      // get input/output indices of operands, filter modified operands and specify forwarding
-//      calcProgram.getProjectList
-//        .map(ref => (ref.getName, ref.getIndex))
-//        .zipWithIndex
-//        .map { case ((name, inputIndex), projectIndex) => (name, inputIndex, projectIndex) }
-//        .filterNot(ref => modified.contains(ref._2))
-//        .map {ref =>
-//          if (ref._2 == ref._3) {
-//            println(wrapIndex(ref._2))
-//            wrapIndex(ref._2)
-//          } else {
-//            println(wrapIndices(ref._2, ref._3))
-//            wrapIndices(ref._2, ref._3)
-//          }
-//        }.mkString(";")
-//    }
-
-
 
     expectedType match {
 
@@ -162,32 +92,28 @@ abstract class BatchScan(
 
           val opName = s"from: (${getRowType.getFieldNames.asScala.toList.mkString(", ")})"
 
-          val f = (v: Int) => s"f$v"
-          val `_` = (v: Int) => s"_${v + 1}"
           implicit def string2ForwardFields(left: String) = new AnyRef {
             def ->(right: String):String = left + "->" + right
           }
 
-          val rowTypeField = (v: Int) => s"f$v"
-          //      val `_` = (v: Int) => s"_${v + 1}"
           val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
-          //      val caseClassField = (v: Int) => ""
 
           def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
             typeInformation match {
-              case row if row.isInstanceOf[RowTypeInfo] => rowTypeField
-              case pojo: PojoTypeInfo[_] => compositeTypeField(pojo.getFieldNames.toSeq)
-              case caseClass: CaseClassTypeInfo[_] => compositeTypeField(caseClass.getFieldNames.toSeq)
-              //TODO why
+              case composite: CompositeType[_] => compositeTypeField(composite.getFieldNamesUnordered)
+//              case row if row.isInstanceOf[RowTypeInfo] => rowTypeField
+//              case pojo: PojoTypeInfo[_] => compositeTypeField(pojo.getFieldNames.toSeq)
+//              case caseClass: CaseClassTypeInfo[_] => compositeTypeField(caseClass.getFieldNames.toSeq)
+//              case javaTuple: TupleTypeInfo[_] => compositeTypeField(javaTuple.getFieldNames.toSeq)
               case basic: BasicTypeInfo[_] => (v: Int) => s"*"
             }
           }
-
+          inputType.asInstanceOf[PojoTypeInfo[_]].getFieldNames.zip(determinedType.asInstanceOf[RowTypeInfo].getFieldNames).map(a => a._1 -> a._2)
           val wrapInput = chooseWrapper(inputType)
           val wrapOutput = chooseWrapper(determinedType)
 
           def wrapIndex(index: Int): String = {
-            if (inputType.getClass == determinedType.getClass) {
+            if (inputType.getTypeClass == determinedType.getTypeClass) {
               wrapInput(index)
             } else {
               wrapInput(index) -> wrapOutput(index)
@@ -195,7 +121,10 @@ abstract class BatchScan(
           }
 
 //          "_1->f0;_2->f1;_3->f2"
-          input.map(mapFunc).withForwardedFields(flinkTable.fieldIndexes.map(wrapIndex).mkString(";")).name(opName)
+
+          val string: String = flinkTable.fieldIndexes.map(wrapIndex).mkString(";")
+          val string1: String = inputType.asInstanceOf[PojoTypeInfo[_]].getFieldNames.zip(determinedType.asInstanceOf[RowTypeInfo].getFieldNames).map(a => a._1 -> a._2).mkString(";")
+          input.map(mapFunc).withForwardedFields(string1).name(opName)
         }
         // no conversion necessary, forward
         else {

@@ -71,7 +71,8 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 	private static final Pattern PATTERN_NESTED_FIELDS_WILDCARD = Pattern.compile(REGEX_NESTED_FIELDS_WILDCARD);
 
 	private final PojoField[] fields;
-	
+	private final PojoField[] fieldsUnordered;
+
 	private final int totalFields;
 
 	@PublicEvolving
@@ -82,6 +83,7 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 				"POJO %s is not public", typeClass);
 
 		this.fields = fields.toArray(new PojoField[fields.size()]);
+		this.fieldsUnordered = fields.toArray(new PojoField[fields.size()]);
 
 		Arrays.sort(this.fields, new Comparator<PojoField>() {
 			@Override
@@ -283,6 +285,15 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 		String[] result = new String[fields.length];
 		for (int i = 0; i < fields.length; i++) {
 			result[i] = fields[i].getField().getName();
+		}
+		return result;
+	}
+
+	@Override
+	public String[] getFieldNamesUnordered() {
+		String[] result = new String[fieldsUnordered.length];
+		for (int i = 0; i < fieldsUnordered.length; i++) {
+			result[i] = fieldsUnordered[i].getField().getName();
 		}
 		return result;
 	}
