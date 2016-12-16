@@ -94,37 +94,31 @@ abstract class BatchScan(
 
           implicit def string2ForwardFields(left: String) = new AnyRef {
             def ->(right: String):String = left + "->" + right
+            def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
           }
 
           val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
 
           def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
             typeInformation match {
-              case composite: CompositeType[_] => compositeTypeField(composite.getFieldNamesUnordered)
-//              case row if row.isInstanceOf[RowTypeInfo] => rowTypeField
-//              case pojo: PojoTypeInfo[_] => compositeTypeField(pojo.getFieldNames.toSeq)
-//              case caseClass: CaseClassTypeInfo[_] => compositeTypeField(caseClass.getFieldNames.toSeq)
-//              case javaTuple: TupleTypeInfo[_] => compositeTypeField(javaTuple.getFieldNames.toSeq)
+              case composite: CompositeType[_] => compositeTypeField(composite.getFieldNames)
               case basic: BasicTypeInfo[_] => (v: Int) => s"*"
             }
           }
-          inputType.asInstanceOf[PojoTypeInfo[_]].getFieldNames.zip(determinedType.asInstanceOf[RowTypeInfo].getFieldNames).map(a => a._1 -> a._2)
+
           val wrapInput = chooseWrapper(inputType)
           val wrapOutput = chooseWrapper(determinedType)
 
-          def wrapIndex(index: Int): String = {
-            if (inputType.getTypeClass == determinedType.getTypeClass) {
-              wrapInput(index)
-            } else {
-              wrapInput(index) -> wrapOutput(index)
-            }
+
+          def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
+            wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
           }
 
-//          "_1->f0;_2->f1;_3->f2"
-
-          val string: String = flinkTable.fieldIndexes.map(wrapIndex).mkString(";")
-          val string1: String = inputType.asInstanceOf[PojoTypeInfo[_]].getFieldNames.zip(determinedType.asInstanceOf[RowTypeInfo].getFieldNames).map(a => a._1 -> a._2).mkString(";")
-          input.map(mapFunc).withForwardedFields(string1).name(opName)
+          val fields: String = flinkTable.fieldIndexes
+            .zipWithIndex.map {
+            case (li, ri) => wrapIndices(li, ri)
+          }.mkString(";")
+          input.map(mapFunc).withForwardedFields(fields).name(opName)
         }
         // no conversion necessary, forward
         else {
