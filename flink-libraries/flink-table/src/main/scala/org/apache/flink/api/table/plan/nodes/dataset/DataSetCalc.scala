@@ -141,37 +141,30 @@ class DataSetCalc(
 
       implicit def string2ForwardFields(left: String) = new AnyRef {
         def ->(right: String):String = left + "->" + right
+        def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
       }
 
 
       def chooseWrapper(typeInformation: Any): (Int) => String = {
         typeInformation match {
-          case composite: CompositeType[_] => compositeTypeField(composite.getFieldNamesUnordered)
-//          case row if row.isInstanceOf[RowTypeInfo] => compositeTypeField(row.asInstanceOf[RowTypeInfo].getFieldNames.toSeq)
-//          case pojo: PojoTypeInfo[_] =>
-//            AggregationsItCase.java#testPojoAggregation()
-//            if (pojo.getFieldNames.toSet == calcProgram.getOutputRowType.getFieldNames.toSet) {
-//              compositeTypeField(calcProgram.getOutputRowType.getFieldNames)
-//            } else {
-//              compositeTypeField(pojo.getFieldNames.toSeq)
-//            }
-//          case caseClass: CaseClassTypeInfo[_] => compositeTypeField(caseClass.getFieldNames.toSeq)
-//          case javaTuple: TupleTypeInfo[_] => compositeTypeField(javaTuple.getFieldNames.toSeq)
-          //TODO why
+          case composite: CompositeType[_] => {
+            //POJOs' fields are sorted, so we can not access them by their positional index. So we collect field names from
+            //outputRowType. For all other types we get field names from inputDS.
+            if (composite.getFieldNames.toSet == calcProgram.getOutputRowType.getFieldNames.toSet) {
+              compositeTypeField(calcProgram.getOutputRowType.getFieldNames)
+            } else {
+              compositeTypeField(composite.getFieldNames)
+            }
+          }
           case basic: BasicTypeInfo[_] => (v: Int) => s"*"
         }
       }
 
 
       val wrapInput = chooseWrapper(inputDS.getType)
-//      val wrapInput = compositeTypeField(calcProgram.getInputRowType.getFieldNames)
-
-
-//      val wrapOutput = compositeTypeField(calcProgram.getOutputRowType.getFieldNames)
       val wrapOutput = chooseWrapper(returnType)
 
       //choose format of string depending on input/output types
-
       def wrapIndex(index: Int): String = {
         if (inputDS.getType.getClass == returnType.getClass) {
           wrapInput(index)
@@ -182,7 +175,7 @@ class DataSetCalc(
 
       //choose format of string depending on input/output types
       def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-        wrapInput(inputIndex) -> wrapOutput(outputIndex)
+        wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
       }
 
       //get indices of all modified operands
@@ -210,31 +203,29 @@ class DataSetCalc(
           }
         }.mkString(";")
     }
-
-
-    def printInfo: Unit = {
-      val inputTypes = this.calcProgram.getInputRowType
-      val inputCount = this.calcProgram.getExprCount
-      val inputFields: mutable.Buffer[RexInputRef] = this.calcProgram.getExprList.filter(_.isInstanceOf[RexInputRef]).map(_.asInstanceOf[RexInputRef])
-      val rexCalls = this.calcProgram.getExprList.filter(_.isInstanceOf[RexCall]).map(_.asInstanceOf[RexCall])
-
-      println(
-        s"""
-           |Total fields: $inputCount
-
-           |Input types: $inputTypes
-           |Input fields: ${inputFields.mkString(", ")}
-           |Input Map: ${inputFields.map(e => (e.getName, e.getIndex))}
-           |Rex calls: ${rexCalls.mkString(", ")}
-           |Rex operands: ${rexCalls.map(_.operands).mkString(", ")}
-           |Output types: ${calcProgram.getOutputRowType}
-           |Project list: ${calcProgram.getProjectList}
-           |Project Map: ${calcProgram.getProjectList.map(e => (e.getName, e.getIndex))}
-           |Efficient: ${tableEnv.config.getEfficientTypeUsage}
-        """.stripMargin)
-    }
-
-    printInfo
+//
+//    def printInfo: Unit = {
+//      val inputTypes = this.calcProgram.getInputRowType
+//      val inputCount = this.calcProgram.getExprCount
+//      val inputFields: mutable.Buffer[RexInputRef] = this.calcProgram.getExprList.filter(_.isInstanceOf[RexInputRef]).map(_.asInstanceOf[RexInputRef])
+//      val rexCalls = this.calcProgram.getExprList.filter(_.isInstanceOf[RexCall]).map(_.asInstanceOf[RexCall])
+//
+//      println(
+//        s"""
+//           |Total fields: $inputCount
+//
+//           |Input types: $inputTypes
+//           |Input fields: ${inputFields.mkString(", ")}
+//           |Input Map: ${inputFields.map(e => (e.getName, e.getIndex))}
+//           |Rex calls: ${rexCalls.mkString(", ")}
+//           |Rex operands: ${rexCalls.map(_.operands).mkString(", ")}
+//           |Output types: ${calcProgram.getOutputRowType}
+//           |Project list: ${calcProgram.getProjectList}
+//           |Project Map: ${calcProgram.getProjectList.map(e => (e.getName, e.getIndex))}
+//           |Efficient: ${tableEnv.config.getEfficientTypeUsage}
+//        """.stripMargin)
+//    }
+//    printInfo
 
     val mapFunc = calcMapFunction(genFunction)
 
@@ -242,7 +233,6 @@ class DataSetCalc(
     println(fields)
 
     if(fields != "") {
-//      inputDS.flatMap(mapFunc).withForwardedFields("f2->name;f1->value").name(calcOpName(calcProgram, getExpressionString))
       inputDS.flatMap(mapFunc).withForwardedFields(fields).name(calcOpName(calcProgram, getExpressionString))
     } else {
       inputDS.flatMap(mapFunc).name(calcOpName(calcProgram, getExpressionString))

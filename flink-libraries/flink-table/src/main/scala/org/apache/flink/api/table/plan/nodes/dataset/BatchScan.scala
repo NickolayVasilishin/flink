@@ -92,33 +92,37 @@ abstract class BatchScan(
 
           val opName = s"from: (${getRowType.getFieldNames.asScala.toList.mkString(", ")})"
 
-          implicit def string2ForwardFields(left: String) = new AnyRef {
-            def ->(right: String):String = left + "->" + right
-            def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
-          }
+          def chooseForwardFields() = {
+            implicit def string2ForwardFields(left: String) = new AnyRef {
+              def ->(right: String): String = left + "->" + right
 
-          val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
-
-          def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
-            typeInformation match {
-              case composite: CompositeType[_] => compositeTypeField(composite.getFieldNames)
-              case basic: BasicTypeInfo[_] => (v: Int) => s"*"
+              def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
             }
+
+            val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
+
+            def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
+              typeInformation match {
+                case composite: CompositeType[_] => compositeTypeField(composite.getFieldNames)
+                case basic: BasicTypeInfo[_] => (v: Int) => s"*"
+              }
+            }
+
+            val wrapInput = chooseWrapper(inputType)
+            val wrapOutput = chooseWrapper(determinedType)
+
+
+            def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
+              wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
+            }
+
+            flinkTable.fieldIndexes
+              .zipWithIndex.map {
+              case (li, ri) => wrapIndices(li, ri)
+            }.mkString(";")
           }
 
-          val wrapInput = chooseWrapper(inputType)
-          val wrapOutput = chooseWrapper(determinedType)
-
-
-          def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-            wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
-          }
-
-          val fields: String = flinkTable.fieldIndexes
-            .zipWithIndex.map {
-            case (li, ri) => wrapIndices(li, ri)
-          }.mkString(";")
-          input.map(mapFunc).withForwardedFields(fields).name(opName)
+          input.map(mapFunc).withForwardedFields(chooseForwardFields()).name(opName)
         }
         // no conversion necessary, forward
         else {
