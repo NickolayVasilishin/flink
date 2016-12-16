@@ -22,10 +22,11 @@ import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rel.logical.LogicalTableFunctionScan
 import org.apache.calcite.rel.metadata.RelMetadataQuery
 import org.apache.calcite.rel.{RelNode, RelWriter, SingleRel}
-import org.apache.calcite.rex.{RexNode, RexCall}
+import org.apache.calcite.rex.{RexCall, RexInputRef, RexLocalRef, RexNode}
 import org.apache.calcite.sql.SemiJoinType
 import org.apache.flink.api.common.functions.FlatMapFunction
-import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
+import org.apache.flink.api.common.typeutils.CompositeType
 import org.apache.flink.api.java.DataSet
 import org.apache.flink.api.table.BatchTableEnvironment
 import org.apache.flink.api.table.codegen.CodeGenerator
@@ -133,6 +134,80 @@ class DataSetCorrelate(
       returnType)
 
     val mapFunc = correlateMapFunction(genFunction)
+
+
+    import scala.collection.JavaConversions._
+    def chooseForwardedFields(): String = {
+
+      val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
+
+      implicit def string2ForwardFields(left: String) = new AnyRef {
+        def ->(right: String):String = left + "->" + right
+        def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
+      }
+
+
+      def chooseWrapper(typeInformation: Any): (Int) => String = {
+        typeInformation match {
+          case composite: CompositeType[_] => {
+            //POJOs' fields are sorted, so we can not access them by their positional index. So we collect field names from
+            //outputRowType. For all other types we get field names from inputDS.
+            if (composite.getFieldNames.toSet == calcProgram.getOutputRowType.getFieldNames.toSet) {
+              compositeTypeField(calcProgram.getOutputRowType.getFieldNames)
+            } else {
+              compositeTypeField(composite.getFieldNames)
+            }
+          }
+          case basic: BasicTypeInfo[_] => (v: Int) => s"*"
+        }
+      }
+
+
+      val wrapInput = chooseWrapper(inputDS.getType)
+      val wrapOutput = chooseWrapper(returnType)
+
+      //choose format of string depending on input/output types
+      def wrapIndex(index: Int): String = {
+        if (inputDS.getType.getClass == returnType.getClass) {
+          wrapInput(index)
+        } else {
+          wrapInput(index) -> wrapOutput(index)
+        }
+      }
+
+      //choose format of string depending on input/output types
+      def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
+        wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
+      }
+
+
+      //TODO get all modifiedOperands, map them to fields
+      //get indices of all modified operands
+      val modifiedOperandsInRel = funcRel.getCall.asInstanceOf[RexCall].operands
+        .map(_.asInstanceOf[RexLocalRef].getIndex)
+        .toSet
+      //TODO do we need it?
+      val joinCondition = if (condition.isDefined) condition.get.asInstanceOf[RexCall].operands
+        .map(_.asInstanceOf[RexLocalRef].getIndex)
+        .toSet else Set()
+      val modifiedOperands = modifiedOperandsInRel ++ joinCondition
+//      // get input/output indices of operands, filter modified operands and specify forwarding
+//      val tuples = calcProgram.getProjectList
+//        .map(ref => (ref.getName, ref.getIndex))
+//        .zipWithIndex
+//        .map { case ((name, inputIndex), projectIndex) => (name, inputIndex, projectIndex) }
+//        //consider only input fields
+//        .filter(_._2 < calcProgram.getExprList.filter(_.isInstanceOf[RexInputRef]).map(_.asInstanceOf[RexInputRef]).size)
+//        .filterNot(ref => modifiedOperands.contains(ref._2))
+//
+//      tuples.map {ref =>
+//        if (ref._2 == ref._3) {
+//          wrapIndex(ref._2)
+//        } else {
+//          wrapIndices(ref._2, ref._3)
+//        }
+//      }.mkString(";")
+//    }
 
     inputDS.flatMap(mapFunc).name(correlateOpName(rexCall, sqlFunction, relRowType))
   }
