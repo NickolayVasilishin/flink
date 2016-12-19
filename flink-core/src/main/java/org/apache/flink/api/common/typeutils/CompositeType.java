@@ -243,9 +243,6 @@ public abstract class CompositeType<T> extends TypeInformation<T> {
 	@PublicEvolving
 	public abstract String[] getFieldNames();
 
-	public String[] getFieldNamesUnordered() {
-		return getFieldNames();
-	}
 	/**
 	 * True if this type has an inherent ordering of the fields, such that a user can
 	 * always be sure in which order the fields will be in. This is true for Tuples and

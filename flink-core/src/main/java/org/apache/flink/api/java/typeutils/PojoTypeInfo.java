@@ -290,15 +290,6 @@ public class PojoTypeInfo<T> extends CompositeType<T> {
 	}
 
 	@Override
-	public String[] getFieldNamesUnordered() {
-		String[] result = new String[fieldsUnordered.length];
-		for (int i = 0; i < fieldsUnordered.length; i++) {
-			result[i] = fieldsUnordered[i].getField().getName();
-		}
-		return result;
-	}
-
-	@Override
 	@PublicEvolving
 	public int getFieldIndex(String fieldName) {
 		for (int i = 0; i < fields.length; i++) {
