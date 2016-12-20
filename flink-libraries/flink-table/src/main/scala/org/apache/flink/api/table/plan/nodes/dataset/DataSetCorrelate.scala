@@ -180,18 +180,24 @@ class DataSetCorrelate(
         wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
       }
 
+      def extractOperands(rex: RexNode): Seq[Int] = {
+        rex match {
+          case r: RexInputRef => Seq(r.getIndex)
+          case call: RexCall => call.operands.flatMap(extractOperands)
+          case _ => Seq()
+        }
+      }
+
 
       //TODO get all modifiedOperands, map them to fields
       //get indices of all modified operands
       val modifiedOperandsInRel = funcRel.getCall.asInstanceOf[RexCall].operands
-        .map {
-          _.asInstanceOf[RexInputRef].getIndex
-        }
+        .flatMap(extractOperands)
         .toSet
       //TODO do we need it?
       val joinCondition = if (condition.isDefined) {
         condition.get.asInstanceOf[RexCall].operands
-          .map(_.asInstanceOf[RexInputRef].getIndex)
+          .flatMap(extractOperands)
           .toSet
       } else {
         Set()
