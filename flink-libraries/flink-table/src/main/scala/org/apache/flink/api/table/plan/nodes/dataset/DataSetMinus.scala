@@ -22,7 +22,8 @@ import org.apache.calcite.plan.{RelOptCluster, RelOptCost, RelOptPlanner, RelTra
 import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rel.metadata.RelMetadataQuery
 import org.apache.calcite.rel.{BiRel, RelNode, RelWriter}
-import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
+import org.apache.flink.api.common.typeutils.CompositeType
 import org.apache.flink.api.java.DataSet
 import org.apache.flink.api.table.BatchTableEnvironment
 import org.apache.flink.api.table.runtime.MinusCoGroupFunction
@@ -128,7 +129,33 @@ class DataSetMinus(
 
           val opName = s"convert: (${getRowType.getFieldNames.asScala.toList.mkString(", ")})"
 
-          minusDs.map(mapFunc).name(opName)
+
+          def chooseForwardFields() = {
+            implicit def string2ForwardFields(left: String) = new AnyRef {
+              def ->(right: String): String = left + "->" + right
+
+              def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
+            }
+
+            val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
+
+            def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
+              typeInformation match {
+                case composite: CompositeType[_] => compositeTypeField(composite.getFieldNames)
+                case basic: BasicTypeInfo[_] => (v: Int) => s"*"
+              }
+            }
+
+            val wrapInput = chooseWrapper(leftType)
+
+            def wrapIndex(index: Int): String = {
+              wrapInput(index)
+            }
+
+            (0 to leftType.getTotalFields).map(wrapIndex).mkString(";")
+          }
+
+          minusDs.map(mapFunc).withForwardedFields(chooseForwardFields()).name(opName)
         }
         // no conversion necessary, forward
         else {
