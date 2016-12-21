@@ -114,7 +114,7 @@ class DataSetSingleRowJoin(
       }
 
     import scala.collection.JavaConversions._
-    def chooseForwardedFields(): (String, String) = {
+    def chooseForwardedFields(): String = {
 
       val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
 
@@ -133,7 +133,7 @@ class DataSetSingleRowJoin(
             compositeTypeField(composite.getFieldNames)
           }
           case r: GenericTypeInfo[_] => if (r.getTypeClass == classOf[Row]) {
-            (0 until (leftDataSet.getType.getTotalFields + rightDataSet.getType.getTotalFields)).map("f"+_)
+            compositeTypeField((0 until (leftDataSet.getType.getTotalFields + rightDataSet.getType.getTotalFields)).map("f"+_))
           } else {
             ???
           }
@@ -141,26 +141,25 @@ class DataSetSingleRowJoin(
         }
       }
 
-      val wrapLeftInput = chooseWrapper(leftDataSet.getType)
-      val wrapRightInput = chooseWrapper(rightDataSet.getType)
+      val wrapInput = chooseWrapper(multiRowDataSet.getType)
       val wrapOutput = chooseWrapper(expectedType.get)
-
       def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-        wrapRightInput(inputIndex) -> wrapOutput(outputIndex) simplify()
+        wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
       }
+      val offset: Int = if (leftIsSingle) 1 else 0
 
-      ((0 until left.getRowType.getFieldCount)
-        .map(wrapLeftInput)
-        .mkString(";"),
-        (0 until right.getRowType.getFieldCount).map(index => wrapIndices(index, index + left.getRowType.getFieldCount)).mkString(";"))
+      (0 until multiRowDataSet.getType.getTotalFields)
+        .map(index => wrapIndices(index, index + offset))
+        .mkString(";")
     }
 
     val fields = chooseForwardedFields()
+//    val fields = "f0->f1"
 
     multiRowDataSet
       .flatMap(mapSideJoin)
       .withBroadcastSet(singleRowDataSet, broadcastSetName)
-        .withForwardedFields()
+      .withForwardedFields(fields)
       .name(getMapOperatorName)
       .asInstanceOf[DataSet[Any]]
   }
