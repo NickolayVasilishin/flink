@@ -24,12 +24,15 @@ import org.apache.calcite.rel.metadata.RelMetadataQuery
 import org.apache.calcite.rel.{BiRel, RelNode, RelWriter}
 import org.apache.calcite.rex.RexNode
 import org.apache.flink.api.common.functions.{FlatJoinFunction, FlatMapFunction}
-import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
+import org.apache.flink.api.common.typeutils.CompositeType
 import org.apache.flink.api.java.DataSet
+import org.apache.flink.api.java.typeutils.GenericTypeInfo
 import org.apache.flink.api.table.codegen.CodeGenerator
 import org.apache.flink.api.table.runtime.{MapJoinLeftRunner, MapJoinRightRunner}
+import org.apache.flink.api.table.typeutils.RowTypeInfo
 import org.apache.flink.api.table.typeutils.TypeConverter.determineReturnType
-import org.apache.flink.api.table.{BatchTableEnvironment, TableConfig}
+import org.apache.flink.api.table.{BatchTableEnvironment, Row, TableConfig}
 
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
@@ -110,9 +113,54 @@ class DataSetSingleRowJoin(
         (leftDataSet, rightDataSet)
       }
 
+    import scala.collection.JavaConversions._
+    def chooseForwardedFields(): (String, String) = {
+
+      val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
+
+      implicit def string2ForwardFields(left: String) = new AnyRef {
+        def ->(right: String): String = left + "->" + right
+
+        def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
+      }
+
+
+      def chooseWrapper(typeInformation: Any): (Int) => String = {
+        typeInformation match {
+          case composite: CompositeType[_] => {
+            //POJOs' fields are sorted, so we can not access them by their positional index. So we collect field names from
+            //outputRowType. For all other types we get field names from inputDS.
+            compositeTypeField(composite.getFieldNames)
+          }
+          case r: GenericTypeInfo[_] => if (r.getTypeClass == classOf[Row]) {
+            (0 until (leftDataSet.getType.getTotalFields + rightDataSet.getType.getTotalFields)).map("f"+_)
+          } else {
+            ???
+          }
+          case basic: BasicTypeInfo[_] => (v: Int) => s"*"
+        }
+      }
+
+      val wrapLeftInput = chooseWrapper(leftDataSet.getType)
+      val wrapRightInput = chooseWrapper(rightDataSet.getType)
+      val wrapOutput = chooseWrapper(expectedType.get)
+
+      def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
+        wrapRightInput(inputIndex) -> wrapOutput(outputIndex) simplify()
+      }
+
+      ((0 until left.getRowType.getFieldCount)
+        .map(wrapLeftInput)
+        .mkString(";"),
+        (0 until right.getRowType.getFieldCount).map(index => wrapIndices(index, index + left.getRowType.getFieldCount)).mkString(";"))
+    }
+
+    val fields = chooseForwardedFields()
+
     multiRowDataSet
       .flatMap(mapSideJoin)
       .withBroadcastSet(singleRowDataSet, broadcastSetName)
+        .withForwardedFields()
       .name(getMapOperatorName)
       .asInstanceOf[DataSet[Any]]
   }
