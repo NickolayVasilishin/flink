@@ -26,7 +26,8 @@ import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rel.{RelCollation, RelNode, RelWriter, SingleRel}
 import org.apache.calcite.rex.{RexLiteral, RexNode}
 import org.apache.flink.api.common.operators.Order
-import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
+import org.apache.flink.api.common.typeutils.CompositeType
 import org.apache.flink.api.java.DataSet
 import org.apache.flink.api.table.{BatchTableEnvironment, TableException}
 import org.apache.flink.api.table.runtime.{CountPartitionFunction, LimitFilterFunction}
@@ -97,6 +98,7 @@ class DataSetSort(
       partitionedDs = partitionedDs.sortPartition(fieldCollation._1, fieldCollation._2)
     }
 
+    val fields: String = "*"
     val limitedDs = if (offset == null && fetch == null) {
       partitionedDs
     } else {
@@ -117,8 +119,10 @@ class DataSetSort(
 
       val limitName = s"offset: $offsetToString, fetch: $fetchToString"
 
+      //forward all
       partitionedDs
         .filter(limitFunction)
+        .withForwardedFields(fields)
         .name(limitName)
         .withBroadcastSet(partitionCount, broadcastName)
     }
@@ -149,8 +153,34 @@ class DataSetSort(
           )
 
           val opName = s"convert: (${getRowType.getFieldNames.asScala.toList.mkString(", ")})"
+          def chooseForwardFields() = {
+            implicit def string2ForwardFields(left: String) = new AnyRef {
+              def ->(right: String): String = left + "->" + right
 
-          limitedDs.map(mapFunc).name(opName)
+              def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
+            }
+
+            val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
+
+            def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
+              typeInformation match {
+                case composite: CompositeType[_] => compositeTypeField(composite.getFieldNames)
+                case basic: BasicTypeInfo[_] => (v: Int) => s"*"
+              }
+            }
+
+            val wrapInput = chooseWrapper(limitedDs.getType)
+            val wrapOutput = chooseWrapper(determinedType)
+
+
+            def wrapIndex(index: Int): String = {
+              wrapInput(index) -> wrapOutput(index) simplify()
+            }
+
+            (0 until limitedDs.getType.getTotalFields).map(wrapIndex).mkString(";")
+          }
+
+          limitedDs.map(mapFunc).withForwardedFields(chooseForwardFields()).name(opName)
         }
         // no conversion necessary, forward
         else {
