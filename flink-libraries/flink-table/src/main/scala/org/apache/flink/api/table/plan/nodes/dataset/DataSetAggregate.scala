@@ -31,7 +31,7 @@ import org.apache.flink.api.table.runtime.aggregate.AggregateUtil
 import org.apache.flink.api.table.runtime.aggregate.AggregateUtil.CalcitePair
 import org.apache.flink.api.table.typeutils.{RowTypeInfo, TypeConverter}
 import org.apache.flink.api.table.{BatchTableEnvironment, FlinkTypeFactory, Row}
-
+import org.apache.flink.api.table.plan.nodes.dataset.forwarding.FieldForwardingUtils.getForwardedInput
 import scala.collection.JavaConverters._
 
 /**
@@ -116,14 +116,12 @@ class DataSetAggregate(
 
     val aggString = aggregationToString(inputType, grouping, getRowType, namedAggregates, Nil)
     val prepareOpName = s"prepare select: ($aggString)"
-    //forward fields from inputds which are not in mapFunction.aggreagates
     val mappedInput = inputDS
       .map(mapFunction)
       .name(prepareOpName)
 
     val rowTypeInfo = new RowTypeInfo(fieldTypes)
 
-    //aggregation unforwardable?
     val result = {
       if (groupingKeys.length > 0) {
         // grouped aggregation
@@ -152,42 +150,12 @@ class DataSetAggregate(
     expectedType match {
       case Some(typeInfo) if typeInfo.getTypeClass != classOf[Row] =>
 
-        //insert conversion forwarding
+        //Forward all fields at conversion
+        val indices = 0 to rowTypeInfo.getTotalFields
+        val fields = getForwardedInput(rowTypeInfo.asInstanceOf[TypeInformation[_]],
+          expectedType.get,
+          indices)
 
-        def chooseForwardFields() = {
-          implicit def string2ForwardFields(left: String) = new AnyRef {
-            def ->(right: String): String = left + "->" + right
-
-            def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
-          }
-
-          val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
-
-          def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
-            typeInformation match {
-              case composite: CompositeType[_] => compositeTypeField(composite.getFieldNames)
-              case basic: BasicTypeInfo[_] => (v: Int) => s"*"
-            }
-          }
-
-          val wrapInput = chooseWrapper(rowTypeInfo.asInstanceOf[TypeInformation[Any]])
-          val wrapOutput = chooseWrapper(expectedType.get)
-
-          def wrapIndex(index: Int): String = {
-              wrapInput(index)
-          }
-
-          def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-            wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
-          }
-
-          rowTypeInfo.asInstanceOf[CompositeType[Any]].getFieldNames
-            .zipWithIndex.map {
-            case (li, ri) => wrapIndex(ri)
-          }.mkString(";")
-        }
-
-        val fields = chooseForwardFields()
         val mapName = s"convert: (${getRowType.getFieldNames.asScala.toList.mkString(", ")})"
         result.map(getConversionMapper(
           config = config,
@@ -197,7 +165,7 @@ class DataSetAggregate(
           conversionOperatorName = "DataSetAggregateConversion",
           fieldNames = getRowType.getFieldNames.asScala
         ))
-            .withForwardedFields(fields)
+        .withForwardedFields(fields)
         .name(mapName)
       case _ => result
     }

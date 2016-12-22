@@ -33,7 +33,7 @@ import org.apache.flink.api.table.runtime.{MapJoinLeftRunner, MapJoinRightRunner
 import org.apache.flink.api.table.typeutils.RowTypeInfo
 import org.apache.flink.api.table.typeutils.TypeConverter.determineReturnType
 import org.apache.flink.api.table.{BatchTableEnvironment, Row, TableConfig}
-
+import org.apache.flink.api.table.plan.nodes.dataset.forwarding.FieldForwardingUtils.{getForwardedFields, compositeTypeField}
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
 
@@ -113,48 +113,22 @@ class DataSetSingleRowJoin(
         (leftDataSet, rightDataSet)
       }
 
-    import scala.collection.JavaConversions._
-    def chooseForwardedFields(): String = {
 
-      val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
-
-      implicit def string2ForwardFields(left: String) = new AnyRef {
-        def ->(right: String): String = left + "->" + right
-
-        def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
-      }
-
-
-      def chooseWrapper(typeInformation: Any): (Int) => String = {
-        typeInformation match {
-          case composite: CompositeType[_] => {
-            //POJOs' fields are sorted, so we can not access them by their positional index. So we collect field names from
-            //outputRowType. For all other types we get field names from inputDS.
-            compositeTypeField(composite.getFieldNames)
-          }
-          case r: GenericTypeInfo[_] => if (r.getTypeClass == classOf[Row]) {
-            compositeTypeField((0 until (leftDataSet.getType.getTotalFields + rightDataSet.getType.getTotalFields)).map("f"+_))
-          } else {
-            ???
-          }
-          case basic: BasicTypeInfo[_] => (v: Int) => s"*"
+    def customWrapper(typeInformation: TypeInformation[_]) = {
+      typeInformation match {
+        case r: GenericTypeInfo[_] => if (r.getTypeClass == classOf[Row]) {
+          val leftCount: Int = leftDataSet.getType.getTotalFields
+          val rightCount: Int = rightDataSet.getType.getTotalFields
+          compositeTypeField((0 until (leftCount + rightCount)).map("f" + _))
+        } else {
+          ???
         }
       }
-
-      val wrapInput = chooseWrapper(multiRowDataSet.getType)
-      val wrapOutput = chooseWrapper(expectedType.get)
-      def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-        wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
-      }
-      val offset: Int = if (leftIsSingle) 1 else 0
-
-      (0 until multiRowDataSet.getType.getTotalFields)
-        .map(index => wrapIndices(index, index + offset))
-        .mkString(";")
     }
-
-    val fields = chooseForwardedFields()
-//    val fields = "f0->f1"
+    val offset: Int = if (leftIsSingle) 1 else 0
+    val indices = (0 until multiRowDataSet.getType.getTotalFields)
+      .map { inputIndex => (inputIndex, inputIndex + offset) }
+    val fields = getForwardedFields(multiRowDataSet.getType, expectedType.get, indices, customWrapper)
 
     multiRowDataSet
       .flatMap(mapSideJoin)
@@ -162,7 +136,8 @@ class DataSetSingleRowJoin(
       .withForwardedFields(fields)
       .name(getMapOperatorName)
       .asInstanceOf[DataSet[Any]]
-  }
+    }
+
 
   private def generateMapFunction(
       config: TableConfig,

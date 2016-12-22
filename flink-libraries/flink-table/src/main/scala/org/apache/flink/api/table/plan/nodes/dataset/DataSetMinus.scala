@@ -28,6 +28,7 @@ import org.apache.flink.api.java.DataSet
 import org.apache.flink.api.table.BatchTableEnvironment
 import org.apache.flink.api.table.runtime.MinusCoGroupFunction
 import org.apache.flink.api.table.typeutils.TypeConverter._
+import org.apache.flink.api.table.plan.nodes.dataset.forwarding.FieldForwardingUtils.getForwardedInput
 
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
@@ -129,33 +130,9 @@ class DataSetMinus(
 
           val opName = s"convert: (${getRowType.getFieldNames.asScala.toList.mkString(", ")})"
 
-
-          def chooseForwardFields() = {
-            implicit def string2ForwardFields(left: String) = new AnyRef {
-              def ->(right: String): String = left + "->" + right
-
-              def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
-            }
-
-            val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
-
-            def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
-              typeInformation match {
-                case composite: CompositeType[_] => compositeTypeField(composite.getFieldNames)
-                case basic: BasicTypeInfo[_] => (v: Int) => s"*"
-              }
-            }
-
-            val wrapInput = chooseWrapper(leftType)
-
-            def wrapIndex(index: Int): String = {
-              wrapInput(index)
-            }
-
-            (0 to leftType.getTotalFields).map(wrapIndex).mkString(";")
-          }
-
-          minusDs.map(mapFunc).withForwardedFields(chooseForwardFields()).name(opName)
+          val indices = 0 to leftType.getTotalFields
+          val fields: String = getForwardedInput(leftType, determinedType, indices)
+          minusDs.map(mapFunc).withForwardedFields(fields).name(opName)
         }
         // no conversion necessary, forward
         else {

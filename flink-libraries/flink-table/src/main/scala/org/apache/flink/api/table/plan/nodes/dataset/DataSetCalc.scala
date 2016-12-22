@@ -24,17 +24,15 @@ import org.apache.calcite.rel.metadata.RelMetadataQuery
 import org.apache.calcite.rel.{RelNode, RelWriter, SingleRel}
 import org.apache.calcite.rex._
 import org.apache.flink.api.common.functions.FlatMapFunction
-import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
-import org.apache.flink.api.common.typeutils.CompositeType
+import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.java.DataSet
-import org.apache.flink.api.java.typeutils.{PojoTypeInfo, TupleTypeInfo}
-import org.apache.flink.api.scala.typeutils.CaseClassTypeInfo
 import org.apache.flink.api.table.BatchTableEnvironment
 import org.apache.flink.api.table.codegen.CodeGenerator
 import org.apache.flink.api.table.plan.nodes.FlinkCalc
-import org.apache.flink.api.table.typeutils.RowTypeInfo
 import org.apache.flink.api.table.typeutils.TypeConverter._
+import org.apache.flink.api.table.plan.nodes.dataset.forwarding.FieldForwardingUtils.getForwardedFields
 
+import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
@@ -43,15 +41,15 @@ import scala.collection.mutable
   *
   */
 class DataSetCalc(
-    cluster: RelOptCluster,
-    traitSet: RelTraitSet,
-    input: RelNode,
-    rowRelDataType: RelDataType,
-    private[flink] val calcProgram: RexProgram, // for tests
-    ruleDescription: String)
+                   cluster: RelOptCluster,
+                   traitSet: RelTraitSet,
+                   input: RelNode,
+                   rowRelDataType: RelDataType,
+                   private[flink] val calcProgram: RexProgram, // for tests
+                   ruleDescription: String)
   extends SingleRel(cluster, traitSet, input)
-  with FlinkCalc
-  with DataSetRel {
+    with FlinkCalc
+    with DataSetRel {
 
   override def deriveRowType() = rowRelDataType
 
@@ -75,7 +73,7 @@ class DataSetCalc(
         calcProgram.getCondition != null)
   }
 
-  override def computeSelfCost (planner: RelOptPlanner, metadata: RelMetadataQuery): RelOptCost = {
+  override def computeSelfCost(planner: RelOptPlanner, metadata: RelMetadataQuery): RelOptCost = {
 
     val child = this.getInput
     val rowCnt = metadata.getRowCount(child)
@@ -104,8 +102,8 @@ class DataSetCalc(
   }
 
   override def translateToPlan(
-      tableEnv: BatchTableEnvironment,
-      expectedType: Option[TypeInformation[Any]]): DataSet[Any] = {
+                                tableEnv: BatchTableEnvironment,
+                                expectedType: Option[TypeInformation[Any]]): DataSet[Any] = {
 
     val config = tableEnv.getConfig
 
@@ -133,51 +131,7 @@ class DataSetCalc(
       body,
       returnType)
 
-
-    import scala.collection.JavaConversions._
-    def chooseForwardedFields(): String = {
-
-      val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
-
-      implicit def string2ForwardFields(left: String) = new AnyRef {
-        def ->(right: String):String = left + "->" + right
-        def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
-      }
-
-
-      def chooseWrapper(typeInformation: Any): (Int) => String = {
-        typeInformation match {
-          case composite: CompositeType[_] => {
-            //POJOs' fields are sorted, so we can not access them by their positional index. So we collect field names from
-            //outputRowType. For all other types we get field names from inputDS.
-            if (composite.getFieldNames.toSet == calcProgram.getOutputRowType.getFieldNames.toSet) {
-              compositeTypeField(calcProgram.getOutputRowType.getFieldNames)
-            } else {
-              compositeTypeField(composite.getFieldNames)
-            }
-          }
-          case basic: BasicTypeInfo[_] => (v: Int) => s"*"
-        }
-      }
-
-
-      val wrapInput = chooseWrapper(inputDS.getType)
-      val wrapOutput = chooseWrapper(returnType)
-
-      //choose format of string depending on input/output types
-      def wrapIndex(index: Int): String = {
-        if (inputDS.getType.getClass == returnType.getClass) {
-          wrapInput(index)
-        } else {
-          wrapInput(index) -> wrapOutput(index)
-        }
-      }
-
-      //choose format of string depending on input/output types
-      def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-        wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
-      }
-
+    def getForwardIndices = {
       //get indices of all modified operands
       val modifiedOperands = calcProgram.
         getExprList
@@ -194,50 +148,18 @@ class DataSetCalc(
         //consider only input fields
         .filter(_._2 < calcProgram.getExprList.filter(_.isInstanceOf[RexInputRef]).map(_.asInstanceOf[RexInputRef]).size)
         .filterNot(ref => modifiedOperands.contains(ref._2))
-
-        tuples.map {ref =>
-          if (ref._2 == ref._3) {
-            wrapIndex(ref._2)
-          } else {
-            wrapIndices(ref._2, ref._3)
-          }
-        }.mkString(";")
+        .map {case (name, in, out) => (in, out)}
+      tuples
     }
-//
-//    def printInfo: Unit = {
-//      val inputTypes = this.calcProgram.getInputRowType
-//      val inputCount = this.calcProgram.getExprCount
-//      val inputFields: mutable.Buffer[RexInputRef] = this.calcProgram.getExprList.filter(_.isInstanceOf[RexInputRef]).map(_.asInstanceOf[RexInputRef])
-//      val rexCalls = this.calcProgram.getExprList.filter(_.isInstanceOf[RexCall]).map(_.asInstanceOf[RexCall])
-//
-//      println(
-//        s"""
-//           |Total fields: $inputCount
-//
-//           |Input types: $inputTypes
-//           |Input fields: ${inputFields.mkString(", ")}
-//           |Input Map: ${inputFields.map(e => (e.getName, e.getIndex))}
-//           |Rex calls: ${rexCalls.mkString(", ")}
-//           |Rex operands: ${rexCalls.map(_.operands).mkString(", ")}
-//           |Output types: ${calcProgram.getOutputRowType}
-//           |Project list: ${calcProgram.getProjectList}
-//           |Project Map: ${calcProgram.getProjectList.map(e => (e.getName, e.getIndex))}
-//           |Efficient: ${tableEnv.config.getEfficientTypeUsage}
-//        """.stripMargin)
-//    }
-//    printInfo
 
     val mapFunc = calcMapFunction(genFunction)
+    val tuples = getForwardIndices
 
-    val fields: String = chooseForwardedFields()
-    println(fields)
+    val fields: String = getForwardedFields(inputDS.getType,
+      returnType,
+      tuples,
+      calcProgram = Some(calcProgram))
 
-    if(fields != "") {
       inputDS.flatMap(mapFunc).withForwardedFields(fields).name(calcOpName(calcProgram, getExpressionString))
-    } else {
-      inputDS.flatMap(mapFunc).name(calcOpName(calcProgram, getExpressionString))
     }
-  }
-
-
 }

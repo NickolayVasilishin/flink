@@ -33,6 +33,9 @@ import org.apache.flink.api.table.codegen.CodeGenerator
 import org.apache.flink.api.table.functions.utils.TableSqlFunction
 import org.apache.flink.api.table.plan.nodes.FlinkCorrelate
 import org.apache.flink.api.table.typeutils.TypeConverter._
+import org.apache.flink.api.table.plan.nodes.dataset.forwarding.FieldForwardingUtils.getForwardedInput
+
+import scala.collection.JavaConversions._
 
 /**
   * Flink RelNode which matches along with join a user defined table function.
@@ -135,51 +138,8 @@ class DataSetCorrelate(
 
     val mapFunc = correlateMapFunction(genFunction)
 
-
-    import scala.collection.JavaConversions._
-    def chooseForwardedFields(): String = {
-
-      val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
-
-      implicit def string2ForwardFields(left: String) = new AnyRef {
-        def ->(right: String):String = left + "->" + right
-        def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
-      }
-
-
-      def chooseWrapper(typeInformation: Any): (Int) => String = {
-        typeInformation match {
-          case composite: CompositeType[_] => {
-            //POJOs' fields are sorted, so we can not access them by their positional index. So we collect field names from
-            //outputRowType. For all other types we get field names from inputDS.
-            if (composite.getFieldNames.toSet == rowType.getFieldNames.toSet) {
-              compositeTypeField(rowType.getFieldNames)
-            } else {
-              compositeTypeField(composite.getFieldNames)
-            }
-          }
-          case basic: BasicTypeInfo[_] => (v: Int) => s"*"
-        }
-      }
-
-
-      val wrapInput = chooseWrapper(inputDS.getType)
-      val wrapOutput = chooseWrapper(returnType)
-
-      //choose format of string depending on input/output types
-      def wrapIndex(index: Int): String = {
-        if (inputDS.getType.getClass == returnType.getClass) {
-          wrapInput(index)
-        } else {
-          wrapInput(index) -> wrapOutput(index)
-        }
-      }
-
-      //choose format of string depending on input/output types
-      def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-        wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
-      }
-
+    def getIndices = {
+      //recursively get all operands from RexCalls
       def extractOperands(rex: RexNode): Seq[Int] = {
         rex match {
           case r: RexInputRef => Seq(r.getIndex)
@@ -187,14 +147,10 @@ class DataSetCorrelate(
           case _ => Seq()
         }
       }
-
-
-      //TODO get all modifiedOperands, map them to fields
       //get indices of all modified operands
       val modifiedOperandsInRel = funcRel.getCall.asInstanceOf[RexCall].operands
         .flatMap(extractOperands)
         .toSet
-      //TODO do we need it?
       val joinCondition = if (condition.isDefined) {
         condition.get.asInstanceOf[RexCall].operands
           .flatMap(extractOperands)
@@ -205,22 +161,18 @@ class DataSetCorrelate(
       val modifiedOperands = modifiedOperandsInRel ++ joinCondition
 
       // get input/output indices of operands, filter modified operands and specify forwarding
-
       val tuples = inputDS.getType.asInstanceOf[CompositeType[_]].getFieldNames
         .zipWithIndex
         .map(_._2)
         .filterNot(modifiedOperands.contains)
+        .toSeq
 
-      tuples.map(wrapIndex).mkString(";")
+      tuples
     }
 
-
-//    val fields: String = "f0;f1"
-    val fields: String = chooseForwardedFields()
-    if (fields == "") {
-      inputDS.flatMap(mapFunc).name(correlateOpName(rexCall, sqlFunction, relRowType))
-    } else {
-      inputDS.flatMap(mapFunc).withForwardedFields(fields).name(correlateOpName(rexCall, sqlFunction, relRowType))
-    }
+    val fields: String = getForwardedInput(inputDS.getType, returnType, getIndices)
+    inputDS.flatMap(mapFunc)
+      .withForwardedFields(fields)
+      .name(correlateOpName(rexCall, sqlFunction, relRowType))
   }
 }

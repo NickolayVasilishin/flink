@@ -32,7 +32,7 @@ import org.apache.flink.api.table.plan.schema.FlinkTable
 import org.apache.flink.api.table.typeutils.RowTypeInfo
 import org.apache.flink.api.table.typeutils.TypeConverter.determineReturnType
 import org.omg.CORBA.BAD_PARAM
-
+import org.apache.flink.api.table.plan.nodes.dataset.forwarding.FieldForwardingUtils.getForwardedFields
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -92,37 +92,10 @@ abstract class BatchScan(
 
           val opName = s"from: (${getRowType.getFieldNames.asScala.toList.mkString(", ")})"
 
-          def chooseForwardFields() = {
-            implicit def string2ForwardFields(left: String) = new AnyRef {
-              def ->(right: String): String = left + "->" + right
-
-              def simplify(): String = if (left.split("->").head == left.split("->").last) left.split("->").head else left
-            }
-
-            val compositeTypeField = (fields: Seq[String]) => (v: Int) => fields(v)
-
-            def chooseWrapper(typeInformation: TypeInformation[Any]): (Int) => String = {
-              typeInformation match {
-                case composite: CompositeType[_] => compositeTypeField(composite.getFieldNames)
-                case basic: BasicTypeInfo[_] => (v: Int) => s"*"
-              }
-            }
-
-            val wrapInput = chooseWrapper(inputType)
-            val wrapOutput = chooseWrapper(determinedType)
-
-
-            def wrapIndices(inputIndex: Int, outputIndex: Int): String = {
-              wrapInput(inputIndex) -> wrapOutput(outputIndex) simplify()
-            }
-
-            flinkTable.fieldIndexes
-              .zipWithIndex.map {
-              case (li, ri) => wrapIndices(li, ri)
-            }.mkString(";")
-          }
-
-          input.map(mapFunc).withForwardedFields(chooseForwardFields()).name(opName)
+          //Forward all fields at conversion
+          val indices = flinkTable.fieldIndexes.zipWithIndex
+          val fields: String = getForwardedFields(inputType, determinedType, indices)
+          input.map(mapFunc).withForwardedFields(fields).name(opName)
         }
         // no conversion necessary, forward
         else {
